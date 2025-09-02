@@ -534,7 +534,7 @@ class DrQAgent(SACAgent):
         # TODO: We assume the state contains quaternion, this is a HACK
         # Quaternion preturbing
         # print("original state", observations["state"][0])
-        # observations = observations.copy(add_or_replace={"state": batched_quaternion_preturb(observations["state"], rng, angle_std_deg=3.5, do_flip_=False, num_batch_dims=1)})
+        observations = observations.copy(add_or_replace={"state": batched_quaternion_preturb(observations["state"], rng, angle_std_deg=3.5, do_flip_=False, num_batch_dims=1)})
         observations = observations.copy(add_or_replace={"state": batched_non_quaternion_state_preturb(observations["state"], rng, num_batch_dims=1)})
         # print("augmented state", observations["state"][0])
         
