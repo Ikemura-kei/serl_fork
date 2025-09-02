@@ -101,11 +101,11 @@ def batched_quaternion_preturb(states, rng, *, angle_std_deg:float=2.0, do_flip_
 def batched_non_quaternion_state_preturb(states, rng, *, num_batch_dims: int=1):
     N = len(states)
     rng, subkey1, subkey2 = jax.random.split(rng, 3)
-    states = states.at[:, :3].set(states[:, :3] + jax.random.uniform(subkey1, (N, 3), minval=-1.0, maxval=1.0) * 0.0001)
+    states = states.at[:, :3].set(states[:, :3] + jax.random.uniform(subkey1, (N, 3), minval=-1.0, maxval=1.0) * 0.000)
     # states = states.at[:, 3:7].set(states[:, 3:7] + jax.random.uniform(rng, (N, 4), minval=-1.0, maxval=1.0) * 0.02)
     # states = states.at[:, 3:7].set(states[:, 3:7]/(jnp.linalg.norm(states[:, 3:7], axis=1, keepdims=True) + _EPS))
     if len(states[0]) > 7:
-        states = states.at[:, 7:].set(states[:, 7:] + jax.random.uniform(subkey2, (N, len(states[0])-7), minval=-1.0, maxval=1.0) * 0.0001)
+        states = states.at[:, 7:].set(states[:, 7:] + jax.random.uniform(subkey2, (N, len(states[0])-7), minval=-1.0, maxval=1.0) * 0.000)
         
     return states
 
