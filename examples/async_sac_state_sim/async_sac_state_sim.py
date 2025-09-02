@@ -37,7 +37,7 @@ flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_bool("save_model", False, "Whether to save model.")
 flags.DEFINE_integer("batch_size", 256, "Batch size.")
 flags.DEFINE_integer("critic_actor_ratio", 8, "critic to actor update ratio.")
-
+flags.DEFINE_integer('utd_ratio', 10,'UTD ratio (update steps per environment step) for high-frequency training')
 flags.DEFINE_integer("max_steps", 1000000, "Maximum number of training steps.")
 flags.DEFINE_integer("replay_buffer_capacity", 1000000, "Replay buffer capacity.")
 
@@ -123,7 +123,11 @@ def actor(agent: SACAgent, data_store, env, sampling_rng):
             next_obs, reward, done, truncated, info = env.step(actions)
             next_obs = np.asarray(next_obs, dtype=np.float32)
             reward = np.asarray(reward, dtype=np.float32)
-
+            print('Action', actions.shape, type(actions), actions)
+            print('Observation', next_obs.shape, type(next_obs), next_obs)
+            # print('Reward', reward.shape, type(reward), reward)
+            # print('Done', done)
+            # print('Truncated', truncated)
             running_return += reward
 
             data_store.insert(
@@ -221,7 +225,7 @@ def learner(rng, agent: SACAgent, replay_buffer, replay_iterator):
         initial=len(replay_buffer),
         desc="replay buffer",
     )
-
+    
     for step in tqdm.tqdm(range(FLAGS.max_steps), dynamic_ncols=True, desc="learner"):
         # Train the networks
         with timer.context("sample_replay_buffer"):
@@ -279,7 +283,7 @@ def main(_):
     # replicate agent across devices
     # need the jnp.array to avoid a bug where device_put doesn't recognize primitives
     agent: SACAgent = jax.device_put(
-        jax.tree_map(jnp.array, agent), sharding.replicate()
+        jax.tree.map(jnp.array, agent), sharding.replicate()
     )
 
     if FLAGS.learner:

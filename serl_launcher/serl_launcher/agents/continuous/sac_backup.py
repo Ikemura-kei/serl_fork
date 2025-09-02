@@ -9,14 +9,14 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 
-from serl_launcher.common.common import JaxRLTrainState, ModuleDict, nonpytree_field, merge_batch_stats
+from serl_launcher.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from serl_launcher.common.encoding import EncodingWrapper
 from serl_launcher.common.optimizers import make_optimizer
 from serl_launcher.common.typing import Batch, Data, Params, PRNGKey
 from serl_launcher.networks.actor_critic_nets import Critic, Policy, ensemblize
 from serl_launcher.networks.lagrange import GeqLagrangeMultiplier
 from serl_launcher.networks.mlp import MLP
-from serl_launcher.vision.data_augmentations import batched_random_crop, batched_quaternion_preturb, batched_non_quaternion_state_preturb
+
 
 class SACAgent(flax.struct.PyTreeNode):
     """
@@ -45,33 +45,14 @@ class SACAgent(flax.struct.PyTreeNode):
         """
         if train:
             assert rng is not None, "Must specify rng when training"
-            
-        variables = {"params": grad_params or self.state.params,}
-        
-        if self.state.batch_stats is not None:
-            variables["batch_stats"] = self.state.batch_stats
-
-        if train and self.state.batch_stats is not None:
-            q_value, updates = self.state.apply_fn(
-                variables,
-                observations,
-                actions,
-                name="critic",
-                rngs={"dropout": rng} if train else {},
-                train=train,
-                mutable=['batch_stats']
-            )
-            new_bs = updates["batch_stats"]
-            return q_value, new_bs
-        else:
-            return self.state.apply_fn(
-                variables,
-                observations,
-                actions,
-                name="critic",
-                rngs={"dropout": rng} if train else {},
-                train=train,
-            ), None
+        return self.state.apply_fn(
+            {"params": grad_params or self.state.params},
+            observations,
+            actions,
+            name="critic",
+            rngs={"dropout": rng} if train else {},
+            train=train,
+        )
 
     def forward_target_critic(
         self,
@@ -101,31 +82,13 @@ class SACAgent(flax.struct.PyTreeNode):
         """
         if train:
             assert rng is not None, "Must specify rng when training"
-            
-        variables = {"params": grad_params or self.state.params,}
-
-        if self.state.batch_stats is not None:
-            variables["batch_stats"] = self.state.batch_stats
-        
-        if train and self.state.batch_stats is not None:
-            policy_out, updates = self.state.apply_fn(
-                variables,
-                observations,
-                name="actor",
-                rngs={"dropout": rng} if train else {},
-                train=train,
-                mutable=['batch_stats']
-            )
-            new_bs = updates["batch_stats"]
-            return policy_out, new_bs
-        else:
-            return self.state.apply_fn(
-                variables,
-                observations,
-                name="actor",
-                rngs={"dropout": rng} if train else {},
-                train=train,
-            ), None
+        return self.state.apply_fn(
+            {"params": grad_params or self.state.params},
+            observations,
+            name="actor",
+            rngs={"dropout": rng} if train else {},
+            train=train,
+        )
 
     def forward_temperature(
         self, *, grad_params: Optional[Params] = None
@@ -156,7 +119,7 @@ class SACAgent(flax.struct.PyTreeNode):
         """shared computation between loss functions"""
         batch_size = batch["rewards"].shape[0]
 
-        next_action_distributions, updates_actor = self.forward_policy(
+        next_action_distributions = self.forward_policy(
             batch["next_observations"], rng=rng
         )
         (
@@ -166,18 +129,18 @@ class SACAgent(flax.struct.PyTreeNode):
         chex.assert_equal_shape([batch["actions"], next_actions])
         chex.assert_shape(next_actions_log_probs, (batch_size,))
 
-        return next_actions, next_actions_log_probs, updates_actor
+        return next_actions, next_actions_log_probs
 
     def critic_loss_fn(self, batch, params: Params, rng: PRNGKey):
         """classes that inherit this class can change this function"""
         batch_size = batch["rewards"].shape[0]
         rng, next_action_sample_key = jax.random.split(rng)
-        next_actions, next_actions_log_probs, updates_actor = self._compute_next_actions(
+        next_actions, next_actions_log_probs = self._compute_next_actions(
             batch, next_action_sample_key
         )
 
         # Evaluate next Qs for all ensemble members (cheap because we're only doing the forward pass)
-        target_next_qs, updates_target_critic = self.forward_target_critic(
+        target_next_qs = self.forward_target_critic(
             batch["next_observations"],
             next_actions,
             rng=rng,
@@ -208,7 +171,7 @@ class SACAgent(flax.struct.PyTreeNode):
             temperature = self.forward_temperature()
             target_q = target_q - temperature * next_actions_log_probs
 
-        predicted_qs, updates_critic = self.forward_critic(
+        predicted_qs = self.forward_critic(
             batch["observations"], batch["actions"], rng=rng, grad_params=params
         )
 
@@ -225,19 +188,19 @@ class SACAgent(flax.struct.PyTreeNode):
             "target_qs": jnp.mean(target_qs),
         }
 
-        return critic_loss, (info, updates_target_critic, updates_critic)
+        return critic_loss, info
 
     def policy_loss_fn(self, batch, params: Params, rng: PRNGKey):
         batch_size = batch["rewards"].shape[0]
         temperature = self.forward_temperature()
 
         rng, policy_rng, sample_rng, critic_rng = jax.random.split(rng, 4)
-        action_distributions, updates_actor = self.forward_policy(
+        action_distributions = self.forward_policy(
             batch["observations"], rng=policy_rng, grad_params=params
         )
         actions, log_probs = action_distributions.sample_and_log_prob(seed=sample_rng)
 
-        predicted_qs, updates_critic = self.forward_critic(
+        predicted_qs = self.forward_critic(
             batch["observations"],
             actions,
             rng=critic_rng,
@@ -255,11 +218,11 @@ class SACAgent(flax.struct.PyTreeNode):
             "entropy": -log_probs.mean(),
         }
 
-        return actor_loss, (info, updates_actor, updates_critic)
+        return actor_loss, info
 
     def temperature_loss_fn(self, batch, params: Params, rng: PRNGKey):
         rng, next_action_sample_key = jax.random.split(rng)
-        next_actions, next_actions_log_probs, updates_actor = self._compute_next_actions(
+        next_actions, next_actions_log_probs = self._compute_next_actions(
             batch, next_action_sample_key
         )
 
@@ -301,7 +264,6 @@ class SACAgent(flax.struct.PyTreeNode):
             Tuple of (new agent, info dict).
         """
         batch_size = batch["rewards"].shape[0]
-        print("Batch size", batch_size)
         chex.assert_tree_shape_prefix(batch, (batch_size,))
 
         # Compute gradients and update params
@@ -314,20 +276,9 @@ class SACAgent(flax.struct.PyTreeNode):
         for key in loss_fns.keys() - networks_to_update:
             loss_fns[key] = lambda params, rng: (0.0, {})
 
-        new_state, aux = self.state.apply_loss_fns(
+        new_state, info = self.state.apply_loss_fns(
             loss_fns, pmap_axis=pmap_axis, has_aux=True
         )
-        
-        info = {}
-        updates = []
-        for k, v in aux.items():
-            if isinstance(v, tuple):
-                info[k] = v[0]
-                for i in range(1, len(v)):
-                    updates.append(v[i])
-            else:
-                info[k] = v 
-        # print("Updates", updates)
 
         # Update target network (if requested)
         if "critic" in networks_to_update:
@@ -336,10 +287,6 @@ class SACAgent(flax.struct.PyTreeNode):
         # Update RNG
         rng, _ = jax.random.split(self.state.rng)
         new_state = new_state.replace(rng=rng)
-        
-        if len(updates) > 0 and new_state.batch_stats is not None:
-            new_state = new_state.replace(batch_stats=merge_batch_stats(new_state.batch_stats, *updates))
-            # print("Updated BN.")
 
         # Log learning rates
         for name, opt_state in new_state.opt_states.items():
@@ -365,7 +312,7 @@ class SACAgent(flax.struct.PyTreeNode):
         The internal RNG will not be updated.
         """
 
-        dist, updates = self.forward_policy(observations, rng=seed, train=False)
+        dist = self.forward_policy(observations, rng=seed, train=False)
         if argmax:
             assert seed is None, "Cannot specify seed when sampling deterministically"
             return dist.mode()
@@ -420,15 +367,13 @@ class SACAgent(flax.struct.PyTreeNode):
 
         rng, init_rng = jax.random.split(rng)
         
-        variables = model_def.init(
+        params = model_def.init(
             init_rng,
             actor=[observations],
             critic=[observations, actions],
             temperature=[],
-        )
-        params = variables["params"]
-        batch_stats = variables.get("batch_stats")
-        # print("batch_stats", batch_stats)
+        )["params"]
+
         rng, create_rng = jax.random.split(rng)
         state = JaxRLTrainState.create(
             apply_fn=model_def.apply,
@@ -436,7 +381,6 @@ class SACAgent(flax.struct.PyTreeNode):
             txs=txs,
             target_params=params,
             rng=create_rng,
-            batch_stats=batch_stats,
         )
 
         # Config
@@ -577,7 +521,7 @@ class SACAgent(flax.struct.PyTreeNode):
             from serl_launcher.vision.pointnet import PointNet
             encoders = {
                 "pnt_cld": PointNet(
-                    **encoder_kwargs,
+                    num_global_feats=encoder_kwargs["num_global_feats"],
                 )}
         else:
             raise NotImplementedError
@@ -585,8 +529,8 @@ class SACAgent(flax.struct.PyTreeNode):
         encoder_def = EncodingWrapper(
             encoder=encoders,
             use_proprio=use_proprio,
+            stop_gradient=False,
             enable_stacking=False,
-            image_keys=["pnt_cld"]
         )
 
         if shared_encoder:
@@ -693,24 +637,6 @@ class SACAgent(flax.struct.PyTreeNode):
             critic_subsample_size=critic_subsample_size,
             **kwargs,
         )
-        
-    def data_augmentation_fn(self, rng, observations):
-        # for pixel_key in self.config["image_keys"]:
-        #     observations = observations.copy(
-        #         add_or_replace={
-        #             pixel_key: batched_random_crop(
-        #                 observations[pixel_key], rng, padding=4, num_batch_dims=2
-        #             )
-        #         }
-        #     )
-        # TODO: We assume the state contains quaternion, this is a HACK
-        # Quaternion preturbing
-        # print("original state", observations["state"][0])
-        # observations = batched_quaternion_preturb(observations, rng, angle_std_deg=1.5, do_flip_=False, num_batch_dims=1)
-        # observations = batched_non_quaternion_state_preturb(observations, rng, num_batch_dims=1)
-        # print("augmented state", observations["state"][0])
-        
-        return observations
 
     @partial(jax.jit, static_argnames=("utd_ratio", "pmap_axis"))
     def update_high_utd(
@@ -728,31 +654,11 @@ class SACAgent(flax.struct.PyTreeNode):
 
         Batch dimension must be divisible by `utd_ratio`.
         """
-        new_agent = self
-        # if self.config["image_keys"][0] not in batch["next_observations"]:
-        #     batch = _unpack(batch)
-
-        rng = new_agent.state.rng
-        rng, obs_rng, next_obs_rng = jax.random.split(rng, 3)
-        obs = self.data_augmentation_fn(obs_rng, batch["observations"])
-        next_obs = self.data_augmentation_fn(next_obs_rng, batch["next_observations"])
-        batch = batch.copy(
-            add_or_replace={
-                "observations": obs,
-                "next_observations": next_obs,
-            }
-        )
-
-        new_state = self.state.replace(rng=rng)
-
-        new_agent = self.replace(state=new_state)
-        
         batch_size = batch["rewards"].shape[0]
         assert (
             batch_size % utd_ratio == 0
         ), f"Batch size {batch_size} must be divisible by UTD ratio {utd_ratio}"
         minibatch_size = batch_size // utd_ratio
-        print("batch size", batch_size, "mini batch size", minibatch_size)
         chex.assert_tree_shape_prefix(batch, (batch_size,))
 
         def scan_body(carry: Tuple[SACAgent], data: Tuple[Batch]):
@@ -785,37 +691,3 @@ class SACAgent(flax.struct.PyTreeNode):
         infos = {**critic_infos, **actor_temp_infos}
 
         return agent, infos
-    
-    @partial(jax.jit, static_argnames=("pmap_axis",))
-    def update_critics(
-        self,
-        batch: Batch,
-        *,
-        pmap_axis: Optional[str] = None,
-    ) -> Tuple["SACAgent", dict]:
-        new_agent = self
-        # if self.config["image_keys"][0] not in batch["next_observations"]:
-        #     batch = _unpack(batch)
-
-        rng = new_agent.state.rng
-        rng, obs_rng, next_obs_rng = jax.random.split(rng, 3)
-        obs = self.data_augmentation_fn(obs_rng, batch["observations"])
-        next_obs = self.data_augmentation_fn(next_obs_rng, batch["next_observations"])
-        batch = batch.copy(
-            add_or_replace={
-                "observations": obs,
-                "next_observations": next_obs,
-            }
-        )
-
-        new_state = self.state.replace(rng=rng)
-        new_agent = self.replace(state=new_state)
-        new_agent, critic_infos = new_agent.update(
-            batch,
-            pmap_axis=pmap_axis,
-            networks_to_update=frozenset({"critic"}),
-        )
-        del critic_infos["actor"]
-        del critic_infos["temperature"]
-
-        return new_agent, critic_infos

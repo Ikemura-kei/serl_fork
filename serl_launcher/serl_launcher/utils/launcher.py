@@ -47,7 +47,7 @@ def make_bc_agent(
     )
 
 
-def make_sac_agent(seed, sample_obs, sample_action, discount=0.99):
+def make_sac_agent(seed, sample_obs, sample_action, discount=0.99, critic_hidden_dims=[256, 256], actor_hidden_dims=[256, 256], backup_entropy=False, critic_ensemble_size=10, critic_subsample_size=2):
     return SACAgent.create_states(
         jax.random.PRNGKey(seed),
         sample_obs,
@@ -61,20 +61,105 @@ def make_sac_agent(seed, sample_obs, sample_action, discount=0.99):
         critic_network_kwargs={
             "activations": nn.tanh,
             "use_layer_norm": True,
-            "hidden_dims": [256, 256],
+            "hidden_dims": critic_hidden_dims,
         },
         policy_network_kwargs={
             "activations": nn.tanh,
             "use_layer_norm": True,
-            "hidden_dims": [256, 256],
+            "hidden_dims": actor_hidden_dims,
         },
         temperature_init=1e-2,
         discount=discount,
-        backup_entropy=False,
-        critic_ensemble_size=10,
-        critic_subsample_size=2,
+        backup_entropy=backup_entropy,
+        critic_ensemble_size=critic_ensemble_size,
+        critic_subsample_size=critic_subsample_size,
     )
 
+def make_pnt_cld_sac_agent(seed, sample_obs, \
+                            sample_action, \
+                            encoder_type='pointnet',\
+                            encoder_kwargs={"num_global_feats": 1024},
+                            shared_encoder=True,\
+                            use_proprio=True,\
+                            critic_hidden_dims=[256, 256],\
+                            policy_hidden_dims=[256, 256],\
+                            backup_entropy=False, \
+                            critic_ensemble_size=10, \
+                            critic_subsample_size=2,
+                            discount=0.96):
+    return SACAgent.create_pnt_cld(
+        jax.random.PRNGKey(seed),
+        sample_obs,
+        sample_action,
+        encoder_type=encoder_type,
+        encoder_kwargs=encoder_kwargs,
+        shared_encoder=shared_encoder,
+        use_proprio=use_proprio,
+        policy_kwargs={
+            "tanh_squash_distribution": True,
+            "std_parameterization": "exp",
+            "std_min": 1e-5,
+            "std_max": 5,
+        },
+        critic_network_kwargs={
+            "activations": nn.tanh,
+            "use_layer_norm": True,
+            "hidden_dims": critic_hidden_dims,
+        },
+        policy_network_kwargs={
+            "activations": nn.tanh,
+            "use_layer_norm": True,
+            "hidden_dims": policy_hidden_dims,
+        },
+        temperature_init=1e-2,
+        discount=discount,
+        backup_entropy=backup_entropy,
+        critic_ensemble_size=critic_ensemble_size,
+        critic_subsample_size=critic_subsample_size,
+    )
+    
+def make_pnt_cld_drq_agent(seed, sample_obs, \
+                            sample_action, \
+                            encoder_type='pointnet',\
+                            encoder_kwargs={"num_global_feats": 1024},
+                            shared_encoder=True,\
+                            use_proprio=True,\
+                            critic_hidden_dims=[256, 256],\
+                            policy_hidden_dims=[256, 256],\
+                            backup_entropy=False, \
+                            critic_ensemble_size=10, \
+                            critic_subsample_size=2,
+                            discount=0.96):
+    return DrQAgent.create_pnt_cld_drq(
+        jax.random.PRNGKey(seed),
+        sample_obs,
+        sample_action,
+        encoder_type=encoder_type,
+        encoder_kwargs=encoder_kwargs,
+        shared_encoder=shared_encoder,
+        use_proprio=use_proprio,
+        policy_kwargs={
+            "tanh_squash_distribution": True,
+            "std_parameterization": "exp",
+            "std_min": 1e-5,
+            "std_max": 5,
+        },
+        critic_network_kwargs={
+            "activations": nn.tanh,
+            "use_layer_norm": True,
+            "hidden_dims": critic_hidden_dims,
+        },
+        policy_network_kwargs={
+            "activations": nn.tanh,
+            "use_layer_norm": True,
+            "hidden_dims": policy_hidden_dims,
+        },
+        temperature_init=1e-2,
+        discount=discount,
+        backup_entropy=backup_entropy,
+        critic_ensemble_size=critic_ensemble_size,
+        critic_subsample_size=critic_subsample_size,
+    )
 
 def make_drq_agent(
     seed,
@@ -112,6 +197,49 @@ def make_drq_agent(
         backup_entropy=False,
         critic_ensemble_size=10,
         critic_subsample_size=2,
+    )
+    return agent
+
+
+def make_voxel_drq_agent(
+    seed,
+    sample_obs,
+    sample_action,
+    image_keys=("image",),
+    encoder_type="voxnet",
+    discount=0.96,
+):
+    encoder_kwargs = dict(bottleneck_dim=128)
+
+    agent = DrQAgent.create_voxel_drq(
+        jax.random.PRNGKey(seed),
+        sample_obs,
+        sample_action,
+        encoder_type=encoder_type,
+        use_proprio=True,
+        image_keys=image_keys,
+        policy_kwargs={
+            "tanh_squash_distribution": True,
+            "std_parameterization": "exp",
+            "std_min": 1e-5,
+            "std_max": 5,
+        },
+        critic_network_kwargs={
+            "activations": nn.tanh,
+            "use_layer_norm": True,
+            "hidden_dims": [256, 256],
+        },
+        policy_network_kwargs={
+            "activations": nn.tanh,
+            "use_layer_norm": True,
+            "hidden_dims": [256, 256],
+        },
+        temperature_init=1e-2,
+        discount=discount,
+        backup_entropy=False,
+        critic_ensemble_size=10,
+        critic_subsample_size=2,
+        encoder_kwargs=encoder_kwargs,
     )
     return agent
 
@@ -259,13 +387,15 @@ def make_replay_buffer(
 
     if preload_rlds_path:
         print(f" - Preloaded {preload_rlds_path} to replay buffer")
-        dataset = tfds.builder_from_directory(preload_rlds_path).as_dataset(split="all")
+        dataset = tfds.builder_from_directory(
+            preload_rlds_path).as_dataset(split="all")
         populate_datastore(
             replay_buffer,
             dataset,
             data_transform=preload_data_transform,
             type="with_dones",
         )
-        print(f" - done populated {len(replay_buffer)} samples to replay buffer")
+        print(
+            f" - done populated {len(replay_buffer)} samples to replay buffer")
 
     return replay_buffer

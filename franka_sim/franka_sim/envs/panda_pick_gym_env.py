@@ -144,6 +144,8 @@ class PandaPickCubeGymEnv(MujocoGymEnv):
         self._viewer = MujocoRenderer(
             self.model,
             self.data,
+            width=480,
+            height=320,
         )
         self._viewer.render(self.render_mode)
 
@@ -219,14 +221,15 @@ class PandaPickCubeGymEnv(MujocoGymEnv):
         obs = self._compute_observation()
         rew = self._compute_reward()
         terminated = self.time_limit_exceeded()
-
+        print("Raw observation", obs)
         return obs, rew, terminated, False, {}
 
     def render(self):
         rendered_frames = []
         for cam_id in self.camera_id:
+            self._viewer.camera_id=cam_id
             rendered_frames.append(
-                self._viewer.render(render_mode="rgb_array", camera_id=cam_id)
+                self._viewer.render(render_mode="rgb_array")
             )
         return rendered_frames
 

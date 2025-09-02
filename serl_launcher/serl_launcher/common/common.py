@@ -1,6 +1,8 @@
 import functools
-from typing import Any, Callable, Dict, Mapping, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Mapping, Sequence, Tuple, Union, Optional
 
+from flax.core import freeze, unfreeze
+from flax.traverse_util import flatten_dict, unflatten_dict
 import flax
 import flax.linen as nn
 import jax
@@ -22,13 +24,24 @@ def shard_batch(batch, sharding):
         batch: A pytree of arrays.
         sharding: A jax Sharding object with shape (num_devices,).
     """
-    return jax.tree_map(
+    return jax.tree.map(
         lambda x: jax.device_put(
             x, sharding.reshape(sharding.shape[0], *((1,) * (x.ndim - 1)))
         ),
         batch,
     )
 
+def merge_batch_stats(old_bs, *updates):
+    """Deep-merge one or more 'batch_stats' partial updates into the full tree."""
+    if not updates:
+        return old_bs
+    base = flatten_dict(unfreeze(old_bs), sep="/")
+    for upd in updates:
+        flat_upd = flatten_dict(unfreeze(upd), sep="/")
+        base.update(flat_upd)  # overlay touched keys
+    merged = unflatten_dict({tuple(k.split("/")): v for k, v in base.items()})
+    return merged
+    return freeze(merged)
 
 class ModuleDict(nn.Module):
     """
@@ -67,6 +80,7 @@ class ModuleDict(nn.Module):
                 )
             out = {}
             for key, value in kwargs.items():
+                print(key)
                 if isinstance(value, Mapping):
                     out[key] = self.modules[key](**value)
                 elif isinstance(value, Sequence):
@@ -104,7 +118,6 @@ class JaxRLTrainState(struct.PyTreeNode):
         opt_states: The optimizer state or pytree of optimizer states.
         rng: The internal rng state.
     """
-
     step: int
     apply_fn: Callable = struct.field(pytree_node=False)
     params: Params
@@ -112,10 +125,11 @@ class JaxRLTrainState(struct.PyTreeNode):
     txs: Any = struct.field(pytree_node=False)
     opt_states: Any
     rng: PRNGKey
+    batch_stats: Optional[flax.core.FrozenDict] = None
 
     @staticmethod
     def _tx_tree_map(*args, **kwargs):
-        return jax.tree_map(
+        return jax.tree.map(
             *args,
             is_leaf=lambda x: isinstance(x, optax.GradientTransformation),
             **kwargs,
@@ -128,7 +142,7 @@ class JaxRLTrainState(struct.PyTreeNode):
 
             new_target_params = tau * params + (1 - tau) * target_params
         """
-        new_target_params = jax.tree_map(
+        new_target_params = jax.tree.map(
             lambda p, tp: p * tau + tp * (1 - tau), self.params, self.target_params
         )
         return self.replace(target_params=new_target_params)
@@ -158,7 +172,7 @@ class JaxRLTrainState(struct.PyTreeNode):
         )
 
         # apply all the updates additively
-        updates_acc = jax.tree_map(
+        updates_acc = jax.tree.map(
             lambda *xs: jnp.sum(jnp.array(xs), axis=0), *updates_flat
         )
         new_params = optax.apply_updates(self.params, updates_acc)
@@ -200,7 +214,7 @@ class JaxRLTrainState(struct.PyTreeNode):
         rngs = jax.tree_util.tree_unflatten(treedef, rngs)
 
         # compute gradients
-        grads_and_aux = jax.tree_map(
+        grads_and_aux = jax.tree.map(
             lambda loss_fn, rng: jax.grad(loss_fn, has_aux=has_aux)(self.params, rng),
             loss_fns,
             rngs,
@@ -214,15 +228,15 @@ class JaxRLTrainState(struct.PyTreeNode):
             grads_and_aux = jax.lax.pmean(grads_and_aux, axis_name=pmap_axis)
 
         if has_aux:
-            grads = jax.tree_map(lambda _, x: x[0], loss_fns, grads_and_aux)
-            aux = jax.tree_map(lambda _, x: x[1], loss_fns, grads_and_aux)
+            grads = jax.tree.map(lambda _, x: x[0], loss_fns, grads_and_aux)
+            aux = jax.tree.map(lambda _, x: x[1], loss_fns, grads_and_aux)
             return self.apply_gradients(grads=grads), aux
         else:
             return self.apply_gradients(grads=grads_and_aux)
 
     @classmethod
     def create(
-        cls, *, apply_fn, params, txs, target_params=None, rng=jax.random.PRNGKey(0)
+        cls, *, apply_fn, params, txs, target_params=None, rng=jax.random.PRNGKey(0), batch_stats=None
     ):
         """
         Initializes a new train state.
@@ -242,4 +256,5 @@ class JaxRLTrainState(struct.PyTreeNode):
             txs=txs,
             opt_states=cls._tx_tree_map(lambda tx: tx.init(params), txs),
             rng=rng,
+            batch_stats=batch_stats,
         )

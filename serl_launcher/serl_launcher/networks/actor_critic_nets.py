@@ -60,8 +60,13 @@ class Critic(nn.Module):
             obs_enc = observations
         else:
             obs_enc = self.encoder(observations)
-
-        inputs = jnp.concatenate([obs_enc, actions], -1)
+        
+        if len(actions.shape) == 1 and len(obs_enc.shape) == 2: # If the encoded observation has a dummy batch dimension
+            assert obs_enc.shape[0] == 1
+            inputs = jnp.concatenate([obs_enc[0], actions], -1)
+        else:
+            inputs = jnp.concatenate([obs_enc, actions], -1)
+        
         outputs = self.network(inputs, train=train)
         if self.init_final is not None:
             value = nn.Dense(

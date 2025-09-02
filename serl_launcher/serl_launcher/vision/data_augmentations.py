@@ -35,6 +35,78 @@ def batched_random_crop(img, rng, *, padding, num_batch_dims: int = 1):
     img = jnp.reshape(img, original_shape)
     return img
 
+_EPS = 1e-12
+
+def _normalize_quat(q):
+    # q: (N,4)
+    return q / (jnp.linalg.norm(q, axis=1, keepdims=True) + _EPS)
+
+def _quat_mul(q1, q2):
+    """
+    Quaternion multiply (vectorized).
+    Inputs: q1, q2 of shape (N,4), scalar-first (w, x, y, z)
+    Returns: q = q1 ⊗ q2, shape (N,4)
+    """
+    w1, x1, y1, z1 = q1[:, 0], q1[:, 1], q1[:, 2], q1[:, 3]
+    w2, x2, y2, z2 = q2[:, 0], q2[:, 1], q2[:, 2], q2[:, 3]
+    return jnp.stack([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2
+    ], axis=1)
+
+@partial(jax.jit, static_argnames=("angle_std_deg", "do_flip_", "num_batch_dims"))
+def batched_quaternion_preturb(states, rng, *, angle_std_deg:float=2.0, do_flip_:bool = False, num_batch_dims: int=1):
+    if do_flip_:
+        do_flip = jax.random.randint(rng, 1, 0, 2) # 0 is flip, 1 is not flip
+    else:
+        do_flip = 1
+        
+    do_flip = do_flip * 2 - 1
+    
+    quats = states[:, 3:7]
+    quats = _normalize_quat(quats)
+    
+    N = quats.shape[0]
+
+    rng, k_axis, k_ang = jax.random.split(rng, 3)
+
+    # 1) Random unit axes (uniform on S^2)
+    axis = jax.random.uniform(k_axis, (N, 3)) - 0.5
+    axis = axis / (jnp.linalg.norm(axis, axis=1, keepdims=True) + _EPS)
+
+    # 2) Small random angles (Gaussian)
+    angles = (jax.random.uniform(k_ang, (N,)) - 0.5) * 2 * (jnp.pi / 180.0) * angle_std_deg
+    half = angles / 2.0
+    sin_half = jnp.sin(half)
+    cos_half = jnp.cos(half)
+
+    # 3) Build δq (N,4)
+    delta_q = jnp.concatenate([cos_half[:, None], axis * sin_half[:, None]], axis=1)
+
+    # 4) Compose
+    noisy_q = _quat_mul(quats, delta_q)
+
+    # 5) Normalize (safety)
+    noisy_q = _normalize_quat(noisy_q)
+    
+    noisy_q = do_flip * noisy_q
+        
+    states = states.at[:, 3:7].set(noisy_q)
+    
+    return states
+
+@partial(jax.jit, static_argnames=("num_batch_dims"))
+def batched_non_quaternion_state_preturb(states, rng, *, num_batch_dims: int=1):
+    N = len(states)
+    states = states.at[:, :3].set(states[:, :3] + jax.random.uniform(rng, (N, 3), minval=-1.0, maxval=1.0) * 0.004)
+    # states = states.at[:, 3:7].set(states[:, 3:7] + jax.random.uniform(rng, (N, 4), minval=-1.0, maxval=1.0) * 0.02)
+    # states = states.at[:, 3:7].set(states[:, 3:7]/(jnp.linalg.norm(states[:, 3:7], axis=1, keepdims=True) + _EPS))
+    if len(states[0]) > 7:
+        states = states.at[:, 7:].set(states[:, 7:] + jax.random.uniform(rng, (N, len(states[0])-7), minval=-1.0, maxval=1.0) * 0.004)
+        
+    return states
 
 def _maybe_apply(apply_fn, inputs, rng, apply_prob):
     should_apply = jax.random.uniform(rng, shape=()) <= apply_prob
@@ -169,7 +241,7 @@ def hsv_to_rgb(h, s, v):
 
 
 def adjust_brightness(rgb_tuple, delta):
-    return jax.tree_map(lambda x: x + delta, rgb_tuple)
+    return jax.tree.map(lambda x: x + delta, rgb_tuple)
 
 
 def adjust_contrast(image, factor):
@@ -177,7 +249,7 @@ def adjust_contrast(image, factor):
         mean = jnp.mean(channel, axis=(-2, -1), keepdims=True)
         return factor * (channel - mean) + mean
 
-    return jax.tree_map(_adjust_contrast_channel, image)
+    return jax.tree.map(_adjust_contrast_channel, image)
 
 
 def adjust_saturation(h, s, v, factor):
@@ -256,7 +328,7 @@ def color_transform(
 
         def cond_fn(args, i):
             def clip(args):
-                return jax.tree_map(lambda arg: jnp.clip(arg, 0.0, 1.0), args)
+                return jax.tree.map(lambda arg: jnp.clip(arg, 0.0, 1.0), args)
 
             out = jax.lax.cond(
                 should_apply & should_apply_color & (i == idx),
@@ -275,7 +347,7 @@ def color_transform(
     random_hue_cond = _make_cond(_random_hue, idx=3)
 
     def _color_jitter(x):
-        rgb_tuple = tuple(jax.tree_map(jnp.squeeze, jnp.split(x, 3, axis=-1)))
+        rgb_tuple = tuple(jax.tree.map(jnp.squeeze, jnp.split(x, 3, axis=-1)))
         if shuffle:
             order = jax.random.permutation(perm_rng, jnp.arange(4, dtype=jnp.int32))
         else:

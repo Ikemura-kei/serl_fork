@@ -17,7 +17,7 @@ from serl_launcher.networks.actor_critic_nets import Critic, Policy, ensemblize
 from serl_launcher.networks.lagrange import GeqLagrangeMultiplier
 from serl_launcher.networks.mlp import MLP
 from serl_launcher.utils.train_utils import _unpack, concat_batches
-from serl_launcher.vision.data_augmentations import batched_random_crop, batched_quaternion_preturb, batched_non_quaternion_state_preturb
+from serl_launcher.vision.data_augmentations import batched_random_crop
 from serl_launcher.vision.voxel_net import VoxNet
 
 class DrQAgent(SACAgent):
@@ -305,12 +305,6 @@ class DrQAgent(SACAgent):
                 "pnt_cld": PointNet(
                     **encoder_kwargs,
                 )}
-        elif encoder_type == "point_net_simplified":
-            from serl_launcher.vision.pointnet import PointNetSimplified
-            encoders = {
-                "pnt_cld": PointNetSimplified(
-                    **encoder_kwargs,
-                )}
         else:
             raise NotImplementedError
 
@@ -356,7 +350,7 @@ class DrQAgent(SACAgent):
             name="temperature",
         )
 
-        agent = cls.create(
+        return cls.create(
             rng,
             observations,
             actions,
@@ -365,11 +359,8 @@ class DrQAgent(SACAgent):
             temperature_def=temperature_def,
             critic_ensemble_size=critic_ensemble_size,
             critic_subsample_size=critic_subsample_size,
-            image_keys=["pnt_cld"],
             **kwargs,
         )
-        
-        return agent
     
     @classmethod
     def create_voxel_drq(
@@ -531,13 +522,6 @@ class DrQAgent(SACAgent):
         #             )
         #         }
         #     )
-        # TODO: We assume the state contains quaternion, this is a HACK
-        # Quaternion preturbing
-        # print("original state", observations["state"][0])
-        # observations = observations.copy(add_or_replace={"state": batched_quaternion_preturb(observations["state"], rng, angle_std_deg=3.5, do_flip_=False, num_batch_dims=1)})
-        # observations = observations.copy(add_or_replace={"state": batched_non_quaternion_state_preturb(observations["state"], rng, num_batch_dims=1)})
-        # print("augmented state", observations["state"][0])
-        
         return observations
 
     @partial(jax.jit, static_argnames=("utd_ratio", "pmap_axis"))

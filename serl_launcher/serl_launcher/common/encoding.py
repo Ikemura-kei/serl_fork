@@ -67,7 +67,11 @@ class EncodingWrapper(nn.Module):
             )(state)
             state = nn.LayerNorm()(state)
             state = nn.tanh(state)
-            encoded = jnp.concatenate([encoded, state], axis=-1)
+            if len(state.shape) == 1 and len(encoded.shape) == 2:
+                assert encoded.shape[0] == 1
+                encoded = jnp.concatenate([encoded[0], state], axis=-1)
+            else:
+                encoded = jnp.concatenate([encoded, state], axis=-1)
 
         return encoded
 
