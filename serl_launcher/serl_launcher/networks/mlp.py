@@ -13,6 +13,8 @@ class MLP(nn.Module):
     activate_final: bool = False
     use_layer_norm: bool = False
     dropout_rate: Optional[float] = None
+    dtype: jnp.dtype = jnp.bfloat16        # compute in bf16
+    param_dtype: jnp.dtype = jnp.float32   # keep params in fp32
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
@@ -21,7 +23,7 @@ class MLP(nn.Module):
             activations = getattr(nn, activations)
 
         for i, size in enumerate(self.hidden_dims):
-            x = nn.Dense(size, kernel_init=default_init())(x)
+            x = nn.Dense(size, kernel_init=default_init(), dtype=self.dtype, param_dtype=self.param_dtype)(x)
 
             if i + 1 < len(self.hidden_dims) or self.activate_final:
                 if self.dropout_rate is not None and self.dropout_rate > 0:

@@ -24,7 +24,7 @@ from serl_launcher.data.data_store import (
 
 
 def make_bc_agent(
-    seed, sample_obs, sample_action, image_keys=("image",), encoder_type="small"
+    seed, sample_obs, sample_action, image_keys=("image",), encoder_type="small", encoder_kwargs={}
 ):
     return BCAgent.create(
         jax.random.PRNGKey(seed),
@@ -43,6 +43,7 @@ def make_bc_agent(
         },
         use_proprio=True,
         encoder_type=encoder_type,
+        encoder_kwargs=encoder_kwargs,
         image_keys=image_keys,
     )
 

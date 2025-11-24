@@ -10,6 +10,8 @@ import jax
 class STN(nn.Module):
     dim: int
     stn_bottle_neck: int
+    dtype: jnp.dtype = jnp.bfloat16        # compute in bf16
+    param_dtype: jnp.dtype = jnp.float32   # keep params in fp32
     
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool):
@@ -51,36 +53,38 @@ class STN(nn.Module):
 class STN_LN(nn.Module):
     dim: int
     stn_bottle_neck: int
+    dtype: jnp.dtype = jnp.bfloat16        # compute in bf16
+    param_dtype: jnp.dtype = jnp.float32   # keep params in fp32
     
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool):
         B = x.shape[0]
         P = x.shape[1]
         
-        x = nn.Conv(features=64, kernel_size=1, kernel_init=nn.initializers.xavier_normal())(x) # (B, P, dim) -> (B, P, 64)
+        x = nn.Conv(features=64, kernel_size=1, kernel_init=nn.initializers.xavier_normal(), dtype=self.dtype, param_dtype=self.param_dtype)(x) # (B, P, dim) -> (B, P, 64)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
         
-        x = nn.Conv(features=128, kernel_size=1, kernel_init=nn.initializers.xavier_normal())(x) # (B, P, 64) -> (B, P, 128)
+        x = nn.Conv(features=128, kernel_size=1, kernel_init=nn.initializers.xavier_normal(), dtype=self.dtype, param_dtype=self.param_dtype)(x) # (B, P, 64) -> (B, P, 128)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
         
-        x = nn.Conv(features=self.stn_bottle_neck, kernel_size=1, kernel_init=nn.initializers.xavier_normal())(x) # (B, P, 128) -> (B, P, self.stn_bottle_neck)
+        x = nn.Conv(features=self.stn_bottle_neck, kernel_size=1, kernel_init=nn.initializers.xavier_normal(), dtype=self.dtype, param_dtype=self.param_dtype)(x) # (B, P, 128) -> (B, P, self.stn_bottle_neck)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
         
         # x = nn.max_pool(x, window_shape=(P,)).reshape(B, self.stn_bottle_neck) # (B, P, self.stn_bottle_neck) -> (B, self.stn_bottle_neck)
         x = jnp.max(x, axis=1).reshape(B, self.stn_bottle_neck) # (B, P, self.stn_bottle_neck) -> (B, self.stn_bottle_neck)
         
-        x = nn.Dense(features=self.stn_bottle_neck)(x) # (B, self.stn_bottle_neck) -> (B, self.stn_bottle_neck)
+        x = nn.Dense(features=self.stn_bottle_neck, dtype=self.dtype, param_dtype=self.param_dtype)(x) # (B, self.stn_bottle_neck) -> (B, self.stn_bottle_neck)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
         
-        x = nn.Dense(features=256)(x) # (B, self.stn_bottle_neck) -> (B, 256)
+        x = nn.Dense(features=256, dtype=self.dtype, param_dtype=self.param_dtype)(x) # (B, self.stn_bottle_neck) -> (B, 256)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
         
-        x = nn.Dense(features=self.dim**2)(x).reshape(B, self.dim, self.dim) # (B, 256) -> (B, dim^2) -> (B, dim, dim)
+        x = nn.Dense(features=self.dim**2, dtype=self.dtype, param_dtype=self.param_dtype)(x).reshape(B, self.dim, self.dim) # (B, 256) -> (B, dim^2) -> (B, dim, dim)
         
         eye = jnp.tile(jnp.eye(self.dim).reshape(1, self.dim, self.dim), (B, 1, 1))
         eye = jax.device_put(eye)
@@ -92,6 +96,8 @@ class STN_LN(nn.Module):
 class STNBNReduced(nn.Module):
     dim: int
     stn_bottle_neck: int
+    dtype: jnp.dtype = jnp.bfloat16        # compute in bf16
+    param_dtype: jnp.dtype = jnp.float32   # keep params in fp32
     
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool):
@@ -166,6 +172,8 @@ class PointNet(nn.Module):
     use_second_stn: bool = True
     stn_type: str = "standard"
     use_layernorm: bool = False
+    dtype: jnp.dtype = jnp.bfloat16        # compute in bf16
+    param_dtype: jnp.dtype = jnp.float32   # keep params in fp32
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool, encode: bool=False):
         if len(x.shape) == 2:
@@ -178,18 +186,18 @@ class PointNet(nn.Module):
         P = x.shape[1]
         
         if self.stn_type == "standard":
-            trans1 = STN(dim=3, stn_bottle_neck=self.stn_bottle_neck)(x, train=train)
+            trans1 = STN(dim=3, stn_bottle_neck=self.stn_bottle_neck, dtype=self.dtype, param_dtype=self.param_dtype)(x, train=train)
         elif self.stn_type == "bn_reduced":
-            trans1 = STNBNReduced(dim=3, stn_bottle_neck=self.stn_bottle_neck)(x, train=train)
+            trans1 = STNBNReduced(dim=3, stn_bottle_neck=self.stn_bottle_neck, dtype=self.dtype, param_dtype=self.param_dtype)(x, train=train)
         elif self.stn_type == "ln":
-            trans1 = STN_LN(dim=3, stn_bottle_neck=self.stn_bottle_neck)(x, train=train)
+            trans1 = STN_LN(dim=3, stn_bottle_neck=self.stn_bottle_neck, dtype=self.dtype, param_dtype=self.param_dtype)(x, train=train)
         else:
             raise NotImplementedError
             
         # print(x.shape, trans1.shape)
         x = jnp.matmul(x, trans1) # (B, P, 3) -> (B, P, 3)
         
-        x = nn.Conv(features=64, kernel_size=1, kernel_init=nn.initializers.xavier_normal())(x) # (B, P, 3) -> (B, P, 64)
+        x = nn.Conv(features=64, kernel_size=1, kernel_init=nn.initializers.xavier_normal(), dtype=self.dtype, param_dtype=self.param_dtype)(x) # (B, P, 3) -> (B, P, 64)
         if self.use_layernorm:
             x = nn.LayerNorm()(x)
         else:
@@ -205,11 +213,11 @@ class PointNet(nn.Module):
         
         if self.use_second_stn:
             if self.stn_type == "standard":
-                trans2 = STN(dim=64, stn_bottle_neck=self.stn_bottle_neck)(x, train=train)
+                trans2 = STN(dim=64, stn_bottle_neck=self.stn_bottle_neck, dtype=self.dtype, param_dtype=self.param_dtype)(x, train=train)
             elif self.stn_type == "bn_reduced":
-                trans2 = STNBNReduced(dim=64, stn_bottle_neck=self.stn_bottle_neck)(x, train=train)
+                trans2 = STNBNReduced(dim=64, stn_bottle_neck=self.stn_bottle_neck, dtype=self.dtype, param_dtype=self.param_dtype)(x, train=train)
             elif self.stn_type == "ln":
-                trans2 = STN_LN(dim=64, stn_bottle_neck=self.stn_bottle_neck)(x, train=train)
+                trans2 = STN_LN(dim=64, stn_bottle_neck=self.stn_bottle_neck, dtype=self.dtype, param_dtype=self.param_dtype)(x, train=train)
             else:
                 raise NotImplementedError
             
@@ -222,14 +230,14 @@ class PointNet(nn.Module):
         # else:
         #     x = nn.BatchNorm(use_running_average=not train)(x)
         
-        x = nn.Conv(features=128, kernel_size=1, kernel_init=nn.initializers.xavier_normal())(x) # (B, P, 64) -> (B, P, 128)
+        x = nn.Conv(features=128, kernel_size=1, kernel_init=nn.initializers.xavier_normal(), dtype=self.dtype, param_dtype=self.param_dtype)(x) # (B, P, 64) -> (B, P, 128)
         if self.use_layernorm:
             x = nn.LayerNorm()(x)
         else:
             x = nn.BatchNorm(use_running_average=not train)(x)
         x = nn.relu(x)
         
-        x = nn.Conv(features=self.num_global_feats, kernel_size=1, kernel_init=nn.initializers.xavier_normal())(x) # (B, P, 128) -> (B, P, num_global_feats)
+        x = nn.Conv(features=self.num_global_feats, kernel_size=1, kernel_init=nn.initializers.xavier_normal(), dtype=self.dtype, param_dtype=self.param_dtype)(x) # (B, P, 128) -> (B, P, num_global_feats)
         if self.use_layernorm:
             x = nn.LayerNorm()(x)
         else:

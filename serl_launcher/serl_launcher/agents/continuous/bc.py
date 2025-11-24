@@ -122,6 +122,7 @@ class BCAgent(flax.struct.PyTreeNode):
         actions: jnp.ndarray,
         # Model architecture
         encoder_type: str = "small",
+        encoder_kwargs: dict = {},
         image_keys: Iterable[str] = ("image",),
         use_proprio: bool = False,
         network_kwargs: dict = {
@@ -181,13 +182,19 @@ class BCAgent(flax.struct.PyTreeNode):
                 )
                 for image_key in image_keys
             }
+        if encoder_type == "point_net":
+            from serl_launcher.vision.pointnet import PointNet
+            encoders = {
+                "pnt_cld": PointNet(
+                    **encoder_kwargs,
+                )}
         else:
             raise NotImplementedError(f"Unknown encoder type: {encoder_type}")
 
         encoder_def = EncodingWrapper(
             encoder=encoders,
             use_proprio=use_proprio,
-            enable_stacking=True,
+            enable_stacking=False,
             image_keys=image_keys,
         )
 

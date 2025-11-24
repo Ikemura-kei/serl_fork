@@ -62,6 +62,7 @@ class EncodingWrapper(nn.Module):
                     encoded = encoded.reshape(-1)
                 if len(state.shape) == 3:
                     state = rearrange(state, "B T C -> B (T C)")
+            print(state.shape)
             state = nn.Dense(
                 self.proprio_latent_dim, kernel_init=nn.initializers.xavier_uniform()
             )(state)
